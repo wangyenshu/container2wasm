@@ -15,7 +15,7 @@ import (
 	"github.com/containerd/containerd/archive"
 	"github.com/containerd/platforms"
 	vendor "github.com/wangyenshu/container2wasm"
-	"github.com/ktock/container2wasm/version"
+	"github.com/wangyenshu/container2wasm/version"
 	"github.com/urfave/cli"
 )
 
