@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,12 +14,23 @@ import (
 
 	"github.com/containerd/containerd/archive"
 	"github.com/containerd/platforms"
-	vendor "github.com/ktock/container2wasm"
+	vendor "github.com/wangyenshu/container2wasm"
 	"github.com/ktock/container2wasm/version"
 	"github.com/urfave/cli"
 )
 
 const defaultOutputFile = "out.wasm"
+
+// getHostIP dynamically detects the host machine's primary local IP address
+func getHostIP() (string, error) {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String(), nil
+}
 
 func main() {
 	app := cli.NewApp()
@@ -82,6 +94,10 @@ func main() {
 		cli.StringFlag{
 			Name:  "pack",
 			Usage: "Overwrite directory to pack with the emulator (valid only for aarch64 QEMU on emscripten)",
+		},
+		cli.StringFlag{
+			Name:  "proxy",
+			Usage: "Enable auto proxy injection for internal Docker builds. Provide port number (e.g. '7897')",
 		},
 	}, flags...)
 	app.Action = rootAction
@@ -174,14 +190,25 @@ func rootAction(clicontext *cli.Context) error {
 		}
 	}
 
-	if legacy {
-		return buildWithLegacyBuilder(builderPath, srcImgPath, destDir, destFile, clicontext)
+	// Dynamically configure proxy if requested
+	var proxyURL string
+	if port := clicontext.String("proxy"); port != "" {
+		ip, err := getHostIP()
+		if err != nil {
+			return fmt.Errorf("failed to detect host IP for proxy: %w", err)
+		}
+		proxyURL = fmt.Sprintf("http://%s:%s", ip, port)
+		log.Printf("Proxy auto-detected: %s\n", proxyURL)
 	}
 
-	return build(builderPath, srcImgPath, destDir, destFile, clicontext)
+	if legacy {
+		return buildWithLegacyBuilder(builderPath, srcImgPath, destDir, destFile, clicontext, proxyURL)
+	}
+
+	return build(builderPath, srcImgPath, destDir, destFile, clicontext, proxyURL)
 }
 
-func build(builderPath string, srcImgPath string, destDir, destFile string, clicontext *cli.Context) error {
+func build(builderPath string, srcImgPath string, destDir, destFile string, clicontext *cli.Context, proxyURL string) error {
 	buildxArgs := []string{
 		"buildx", "build", "--progress=plain",
 		"--build-arg", fmt.Sprintf("TARGETARCH=%s", clicontext.String("target-arch")),
@@ -239,6 +266,14 @@ func build(builderPath string, srcImgPath string, destDir, destFile string, clic
 	if clicontext.Bool("external-bundle") {
 		buildxArgs = append(buildxArgs, "--build-arg", "EXTERNAL_BUNDLE=true")
 	}
+
+	// Inject auto-detected proxy
+	if proxyURL != "" {
+		for _, env := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"} {
+			buildxArgs = append(buildxArgs, "--build-arg", fmt.Sprintf("%s=%s", env, proxyURL))
+		}
+	}
+
 	for _, a := range clicontext.StringSlice("build-arg") {
 		buildxArgs = append(buildxArgs, "--build-arg", a)
 	}
@@ -252,7 +287,7 @@ func build(builderPath string, srcImgPath string, destDir, destFile string, clic
 	return cmd.Run()
 }
 
-func buildWithLegacyBuilder(builderPath string, srcImgPath, destDir, destFile string, clicontext *cli.Context) error {
+func buildWithLegacyBuilder(builderPath string, srcImgPath, destDir, destFile string, clicontext *cli.Context, proxyURL string) error {
 	buildArgs := []string{
 		"build", "--progress=plain",
 		"--platform=linux/amd64",
@@ -303,6 +338,14 @@ func buildWithLegacyBuilder(builderPath string, srcImgPath, destDir, destFile st
 	if clicontext.Bool("external-bundle") {
 		buildArgs = append(buildArgs, "--build-arg", "EXTERNAL_BUNDLE=true")
 	}
+
+	// Inject auto-detected proxy
+	if proxyURL != "" {
+		for _, env := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"} {
+			buildArgs = append(buildArgs, "--build-arg", fmt.Sprintf("%s=%s", env, proxyURL))
+		}
+	}
+
 	for _, a := range clicontext.StringSlice("build-arg") {
 		buildArgs = append(buildArgs, "--build-arg", a)
 	}
